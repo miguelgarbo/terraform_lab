@@ -1,4 +1,5 @@
-#tags que vao ser usadas para filtrar os recursos criados, e tambem para identificar o projeto em si
+#tags que vao ser usadas para filtrar os recursos criados,
+#e tambem para identificar o projeto em si
 locals {
   project_name = "terraform-lab"
 

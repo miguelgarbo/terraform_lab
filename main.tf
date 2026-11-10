@@ -47,7 +47,7 @@ resource "aws_vpc" "vpc_lab" {
 }
 
 # Subnet pública
-resource "aws_subnet" "subnet_lab" {
+resource "aws_subnet" "subnet_pub_lab" {
   #aqui referenciamos o resource criado a cima, perceba a hierarquia na sintaxe,
   # o nome do recurso e dps o nome que atribuimos a ele com a chave referenciada
   # que aqui no caso é o ID
@@ -57,8 +57,24 @@ resource "aws_subnet" "subnet_lab" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "subnet_lab"
+    Name = "subnet_pub_lab"
   }
+}
+
+# Subnet privada para backend e banco
+resource "aws_subnet" "subnet_priv_lab" {
+  vpc_id     = aws_vpc.vpc_lab.id
+  cidr_block = "10.0.2.0/24"
+
+  # Instâncias desta subnet não recebem IP público
+  map_public_ip_on_launch = false
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "subnet_priv_lab"
+    }
+  )
 }
 
 # Internet Gateway
@@ -87,7 +103,7 @@ resource "aws_route_table" "rt_public" {
 # Associar a tabela de rotas à subnet
 # de novo associando o recurso com o nome que demos
 resource "aws_route_table_association" "associacao" {
-  subnet_id      = aws_subnet.subnet_lab.id
+  subnet_id      = aws_subnet.subnet_pub_lab.id
   route_table_id = aws_route_table.rt_public.id
 }
 
@@ -120,21 +136,72 @@ resource "aws_security_group" "ssh" {
   }
 }
 
-# EC2
-#criação da instância EC2, que é a máquina virtual que vamos acessar via SSH
+resource "aws_security_group" "frontend_sg" {
+  name        = "frontend-sg"
+  description = "Permite acesso ao frontend"
+  vpc_id      = aws_vpc.vpc_lab.id
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "SSH do meu IP"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["201.89.76.26/32"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "frontend-sg"
+  }
+}
+
+resource "aws_key_pair" "lab" {
+  key_name = "terraform-lab"
+
+  public_key = file(
+    pathexpand("~/.ssh/terraform-lab.pub")
+  )
+}
+
 resource "aws_instance" "ec2_frontend" {
-  # aqui referenciamos a AMI que foi consultada no data source
   ami           = data.aws_ami.ubuntu.id
   instance_type = "t3.micro"
-  #atrelamos a subnet publica que criamos
-  subnet_id     = aws_subnet.subnet_lab.id
+  subnet_id     = aws_subnet.subnet_pub_lab.id
 
-  #e informamos o id do security group, repare que da pra atrelar vários security groups, por isso é uma lista
+  # Associa nosso Key Pair à EC2
+  key_name = aws_key_pair.lab.key_name
+
   vpc_security_group_ids = [
     aws_security_group.ssh.id
   ]
 
+  user_data = <<-EOF
+              #!/bin/bash
+
+              apt-get update -y
+              apt-get install -y docker.io
+
+              systemctl enable docker
+              systemctl start docker
+
+              usermod -aG docker ubuntu
+              EOF
+
   tags = {
-    Name = "ec2_frontend"
+    Name = "ec2-lab"
   }
 }
