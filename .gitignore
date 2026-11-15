@@ -1,15 +1,32 @@
-*.tfstate
-*.tfstate.*
-
+# Diretórios e arquivos locais do Terraform
+# Local .terraform directories
 .terraform/
 
+# Arquivos de estado (State files)
+# É fundamental não versionar arquivos .tfstate, pois podem conter segredos e causar conflitos
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Arquivos de variáveis sensíveis
 *.tfvars
 *.tfvars.json
 
-crash.log
-crash.*.log
-
+# Arquivos de override locais
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# Logs de travamento/erro do Terraform
+crash.log
+crash.*.log
+
+# Arquivos de plano e saída
+*tfplan*
+*.dot
+*.planout
+
+# Configurações de CLI locais
+.terraformrc
+terraform.rc
