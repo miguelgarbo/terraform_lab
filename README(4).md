@@ -1,6 +1,6 @@
 # Infraestrutura AWS com Terraform — Projeto Aluguel
 
-Este repositório contém o código Terraform que provisiona, de ponta a ponta, a infraestrutura na AWS definida no diagrama de arquitetura do projeto (`diagrama_infra_pI_4_drawio.pdf`). Cada componente do diagrama possui um recurso correspondente no Terraform, de modo que `terraform apply` entrega o ambiente exatamente como foi desenhado.
+Este repositório contém o código Terraform que provisiona, de ponta a ponta, a infraestrutura na AWS definida no diagrama de arquitetura do projeto (`infra/diagrama/diagrama_infraestrutura.pdf`). Cada componente do diagrama possui um recurso correspondente no Terraform, de modo que `terraform apply` entrega o ambiente exatamente como foi desenhado.
 
 ---
 
@@ -19,8 +19,10 @@ Este repositório contém o código Terraform que provisiona, de ponta a ponta, 
 11. [Fluxos de tráfego](#fluxos-de-tráfego)
 12. [Pré-requisitos](#pré-requisitos)
 13. [Como usar](#como-usar)
-14. [Estrutura do projeto](#estrutura-do-projeto)
-15. [Decisões de projeto](#decisões-de-projeto)
+14. [Variáveis e outputs](#variáveis-e-outputs)
+15. [Validação pós-deploy](#validação-pós-deploy)
+16. [Estrutura do projeto](#estrutura-do-projeto)
+17. [Decisões de projeto](#decisões-de-projeto)
 
 ---
 
@@ -37,53 +39,10 @@ Este repositório contém o código Terraform que provisiona, de ponta a ponta, 
 | Banco de dados | **Amazon RDS** com **Multi-AZ** (primário + standby) |
 | Descoberta de serviços | **AWS Cloud Map** (DNS privado) |
 | Imagens de contêiner | **Amazon ECR** (frontend e backend) |
-| Acesso administrativo | **AWS Systems Manager** (sem necessidade de expor SSH) |
+| Acesso administrativo | **AWS Systems Manager** (sem SSH e sem chave `.pem`) |
 
 A arquitetura segue o princípio de **menor exposição**: somente o Nginx fica em subnet pública. Frontend, backend e banco ficam em subnets privadas, e cada camada só aceita tráfego da camada imediatamente anterior, controlado por Security Groups encadeados.
 
----
-
-## Diagrama da arquitetura
-
-```mermaid
-flowchart TB
-    User([Usuário]) -- "HTTPS:443" --> IGW[Internet Gateway]
-    Admin([Admin]) --> SSM[AWS Systems Manager]
-
-    subgraph VPC["VPC vpc_miguel_aluguel — 10.20.0.0/20"]
-        subgraph AZA["us-east-1a"]
-            subgraph PUB["Subnet pública 10.20.0.0/24"]
-                NGINX["EC2 t3.micro<br/>NGINX<br/>(sg: nginx-access)"]
-                NAT[NAT Gateway]
-            end
-            subgraph PRIVA["Subnet privada 10.20.1.0/24"]
-                FE1["ECS Fargate<br/>Frontend #1<br/>(sg: front-pi)"]
-                BE1["ECS Fargate<br/>Backend #1<br/>(sg: back-pi)"]
-                DB1[("RDS Primário<br/>(sg: database)")]
-            end
-        end
-        subgraph AZB["us-east-1b"]
-            subgraph PRIVB["Subnet privada 10.20.2.0/24"]
-                FE2["ECS Fargate<br/>Frontend #2<br/>(sg: front-pi)"]
-                BE2["ECS Fargate<br/>Backend #2<br/>(sg: back-pi)"]
-                DB2[("RDS Standby<br/>Multi-AZ<br/>(sg: database)")]
-            end
-        end
-        CM{{"Cloud Map<br/>miguel-aluguel.internal"}}
-    end
-
-    IGW --> NGINX
-    NGINX -- ":80" --> FE1 & FE2
-    NGINX -- ":8080" --> BE1 & BE2
-    BE1 & BE2 -- ":5432" --> DB1
-    DB1 -. "Replicação síncrona" .-> DB2
-    FE1 & FE2 & BE1 & BE2 -- "443 (saída)" --> NAT
-    NAT --> ECR[(ECR<br/>frontend / backend)]
-    SSM -. gerencia .-> NGINX
-    CM -. DNS interno .- NGINX
-```
-
----
 
 ## Mapeamento diagrama → Terraform
 
@@ -140,6 +99,8 @@ Os Security Groups são **encadeados por referência** (um SG autoriza outro SG,
 | Entrada | 443/tcp | `0.0.0.0/0` |
 | Saída | 80/tcp | SG `front-pi` |
 | Saída | 8080/tcp | SG `back-pi` |
+| Saída | 443/tcp | `0.0.0.0/0` (agente SSM e atualizações) |
+| Saída | 80/tcp | `0.0.0.0/0` (repositórios `apt` do Ubuntu) |
 
 ### `front-pi` (diagrama: `sg-frontend`)
 
@@ -174,6 +135,20 @@ Os Security Groups são **encadeados por referência** (um SG autoriza outro SG,
 - Associada ao SG `nginx-access`.
 - É o **único ponto de entrada público** da aplicação (portas 80/443).
 - Encaminha as requisições para o frontend (porta `80`) e para o backend (porta `8080`) usando os nomes DNS do Cloud Map.
+- AMI: **Ubuntu 24.04 LTS (Noble)**, oficial da Canonical.
+- Toda a configuração é feita via `user_data` no primeiro boot: instala `nginx`, `dnsutils` e `curl`, grava o `server` em `/etc/nginx/sites-available/default`, valida com `nginx -t` e inicia o serviço.
+
+| Rota | Destino |
+|---|---|
+| `/` | `frontend.miguel-aluguel.internal:80` |
+| `/api/` | `backend.miguel-aluguel.internal:8080` |
+
+**Detalhes importantes da configuração do Nginx:**
+
+- O `proxy_pass` usa **variável** (`set $backend ...`) junto com `resolver 10.20.0.2`. Assim o Nginx consulta o DNS do Cloud Map a cada 10 s (`valid=10s`) e acompanha a troca de IPs das tasks Fargate. Sem a variável, ele resolveria o nome uma única vez na inicialização.
+- O resolver `10.20.0.2` é o DNS da VPC (endereço base da rede + 2).
+- O `server` é `default_server` com `server_name _`, então responde também quando o acesso é feito direto pelo IP.
+- O `aws_instance` usa `user_data_replace_on_change = true`: o `user_data` só executa no primeiro boot, e com essa opção qualquer alteração no script recria a instância.
 
 ### Frontend e Backend — ECS Fargate
 
@@ -225,7 +200,52 @@ As tarefas Fargate puxam as imagens a partir das subnets privadas, saindo pelo *
 
 ## Acesso administrativo (SSM)
 
-O administrador acessa a infraestrutura pelo **AWS Systems Manager**, sem precisar expor portas de gerenciamento à internet. A instância EC2 recebe uma **IAM Role** com a política `AmazonSSMManagedInstanceCore` por meio de um *instance profile*.
+O administrador acessa a EC2 pelo **AWS Systems Manager (Session Manager)**. Não há chave `.pem` e **nenhuma porta 22 está aberta**: o agente SSM, que já vem na AMI do Ubuntu 24.04, abre uma conexão de saída (443) até o serviço, e é por ela que a sessão trafega.
+
+Recursos criados no Terraform (`iam.tf`):
+
+| Recurso | Função |
+|---|---|
+| `aws_iam_role.ssm_nginx` | Role que a EC2 assume (`role-ssm-nginx-pi`) |
+| `aws_iam_role_policy_attachment.ssm_core` | Anexa a política `AmazonSSMManagedInstanceCore` |
+| `aws_iam_instance_profile.ssm_nginx` | Liga a role à instância (`iam_instance_profile` no `aws_instance`) |
+
+**Pré-requisitos na máquina do administrador:**
+
+- AWS CLI configurado
+- [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) instalado
+- Permissões IAM `ssm:StartSession` e `ssm:TerminateSession`
+
+**Conectar:** o Terraform já devolve o comando pronto, com o id atual da instância (o id muda sempre que a instância é recriada):
+
+```bash
+cd infra/terraform
+$(terraform output -raw ssm_command)
+```
+
+Ou, se preferir, copie o valor de `ssm_command` mostrado ao final do `terraform apply`. O output é definido em `outputs.tf`:
+
+```hcl
+output "ssm_command" {
+  value = "aws ssm start-session --region us-east-1 --target ${aws_instance.ec2-nginx-pi.id}"
+}
+```
+
+Caso não tenha o state do Terraform à mão, dá para buscar a instância pela tag `Name`:
+
+```bash
+aws ssm start-session --region us-east-1 --target $(aws ec2 describe-instances --region us-east-1 \
+  --filters "Name=tag:Name,Values=ec2-nginx-pi" "Name=instance-state-name,Values=running" \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text)
+```
+
+Dentro da sessão: `sudo -i` para virar root e `exit` para sair.
+
+**Verificar se a instância está registrada no SSM:**
+
+```bash
+aws ssm describe-instance-information --region us-east-1
+```
 
 ---
 
@@ -274,20 +294,84 @@ Admin ──▶ AWS Systems Manager ──▶ EC2 / recursos da VPC
 # 1. Entrar no diretório do Terraform
 cd infra/terraform
 
-# 2. Inicializar providers e backend
+# 2. Criar o arquivo de variáveis a partir do template e preencher os valores
+cp terraform.tfvars.ex terraform.tfvars
+
+# 3. Inicializar providers e backend
 terraform init
 
-# 3. Validar a sintaxe
+# 4. Validar a sintaxe
 terraform validate
 
-# 4. Visualizar o que será criado
+# 5. Visualizar o que será criado
 terraform plan
 
-# 5. Provisionar a infraestrutura
+# 6. Provisionar a infraestrutura
 terraform apply
 
-# 6. Destruir o ambiente quando não for mais necessário
+# 7. Destruir o ambiente quando não for mais necessário
 terraform destroy
+```
+
+Para forçar a recriação apenas da instância do Nginx (por exemplo, depois de ajustar o `user_data`):
+
+```bash
+terraform apply -replace=aws_instance.ec2-nginx-pi
+```
+
+---
+
+## Variáveis e outputs
+
+**Variáveis:** declaradas em `variables.tf`. Os valores reais ficam em `terraform.tfvars`, criado a partir do template `terraform.tfvars.ex`.
+
+> `terraform.tfvars` pode conter dados sensíveis (como senha do banco) e **não deve ser versionado**. O mesmo vale para `terraform.tfstate` e `terraform.tfstate.backup`.
+
+**Outputs** (`outputs.tf`), exibidos ao final do `terraform apply`:
+
+| Output | Descrição |
+|---|---|
+| `public_ip_access` | IP público da EC2 do Nginx (ponto de entrada da aplicação) |
+| `private_ip_nginx` | IP privado da EC2 do Nginx na subnet pública |
+| `public_ip_nat` | IP público de saída do NAT Gateway |
+| `url_app` | URL de acesso à aplicação (`http://<ip>/welcome`) |
+| `instance_id_nginx` | ID da instância EC2 do Nginx (muda quando a instância é recriada) |
+| `ssm_command` | Comando pronto para abrir uma sessão SSM na EC2 do Nginx |
+
+---
+
+## Validação pós-deploy
+
+Roteiro usado para validar que o ambiente provisionado corresponde ao diagrama. Rode na EC2 do Nginx.
+
+**1. Cloud Map: as duas réplicas de cada serviço devem aparecer (uma por AZ):**
+
+```bash
+getent hosts frontend.miguel-aluguel.internal   # esperado: um IP 10.20.1.x e um 10.20.2.x
+getent hosts backend.miguel-aluguel.internal    # esperado: um IP 10.20.1.x e um 10.20.2.x
+```
+
+**2. Conectividade Nginx → serviços (valida os Security Groups):**
+
+```bash
+curl -i http://frontend.miguel-aluguel.internal:80     # 200 OK com o HTML do frontend
+curl -i http://backend.miguel-aluguel.internal:8080/   # 403 (Spring Security): backend no ar
+```
+
+**3. Fluxo completo pelo Nginx:**
+
+```bash
+curl -i localhost            # frontend
+curl -i localhost/api/       # 403 do Spring: o proxy alcançou o backend
+```
+
+**4. Logs, em caso de falha:**
+
+```bash
+sudo nginx -t
+sudo systemctl status nginx --no-pager
+sudo tail -n 20 /var/log/nginx/error.log
+cat /var/log/cloud-init-output.log
 ```
 
 ---
@@ -298,21 +382,19 @@ terraform destroy
 terraform_lab/
 └── infra/
     └── terraform/
-        ├── provider.tf          # provider AWS 
-        ├── network.tf           # VPC, subnets, IGW, NAT, rotas
-        ├── security.tf          # Security Groups e regras
-        ├── compute.tf           # instância Nginx, cluster, task definitions e services
-        ├── database.tf          # subnet group e instância RDS Multi-AZ
-        ├── cloudmap.tf          # namespace e serviços de discovery para resolução de dns interno para o nginx
-        ├── outputs.tf           # outputs com ips gerados
-        ├── terraform.tfvars.ex  # arquivo de template para criar o terraform.vars com a definição dos valores para as variaveis
-        └── variables.tf         # variaveis usadas para prover a infra e a aplicação Miguel Aluguel
-    └── diagrama/
-        ├── diagrama_infraestrutura.pdf # diagrama da infra criada pelo terraform
-
-
+        ├── provider.tf           # provider AWS
+        ├── variables.tf          # variáveis da infraestrutura e da aplicação Miguel Aluguel
+        ├── terraform.tfvars.ex   # template para criar o terraform.tfvars
+        ├── terraform.tfvars      # valores das variáveis (não versionar)
+        ├── network.tf            # VPC, subnets, IGW, NAT Gateway e rotas
+        ├── security.tf           # Security Groups e suas regras
+        ├── compute.tf            # EC2 Nginx, cluster ECS, task definitions e services
+        ├── database.tf           # DB subnet group e RDS Multi-AZ
+        ├── cloudmap.tf           # namespace e serviços de DNS interno (resolução para o Nginx)
+        ├── iam.tf                # role, política e instance profile do SSM
+        ├── outputs.tf            # outputs com os IPs gerados
+        ├── terraform.tfstate     # estado do Terraform (gerado, não versionar)
 ```
-
 
 ---
 
@@ -325,4 +407,5 @@ terraform_lab/
 - **Duas réplicas em AZs distintas:** tolerância a falha de uma zona inteira.
 - **RDS Multi-AZ:** failover automático do banco, com replicação síncrona.
 - **Cloud Map:** comunicação por nome DNS, sem IPs fixos.
-- **SSM no lugar de SSH:** acesso administrativo auditável e sem portas de gerência expostas.
+- **SSM no lugar de SSH:** acesso administrativo auditável, sem chave `.pem` e sem a porta 22 aberta. O antigo Security Group `libera-ssh` foi removido.
+- **Saída do Nginx limitada a 80 e 443:** além do tráfego para frontend e backend, a EC2 só sai para o agente SSM (443) e para os repositórios `apt` (80).

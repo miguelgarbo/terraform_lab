@@ -23,3 +23,7 @@ output "url_app" {
 
   value = "http://${aws_instance.ec2-nginx-pi.public_ip}/welcome"
 }
+
+output "ssm_command" {
+  value = "aws ssm start-session --region us-east-1 --target ${aws_instance.ec2-nginx-pi.id}"
+}

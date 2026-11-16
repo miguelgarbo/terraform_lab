@@ -19,10 +19,12 @@ resource "aws_instance" "ec2-nginx-pi" {
   associate_public_ip_address = true
 
   vpc_security_group_ids = [
-    aws_security_group.ssh.id,
     aws_security_group.app_access.id
   ]
   user_data_replace_on_change = true
+
+  iam_instance_profile = aws_iam_instance_profile.ssm_nginx.name
+
   user_data                   = <<-EOF
     #!/bin/bash
     set -euxo pipefail
@@ -97,28 +99,6 @@ EOF
 # CLUSTER ECS + FARGATE
 resource "aws_ecs_cluster" "pi_cluster" {
   name = "miguel-aluguel-cluster"
-}
-
-data "aws_iam_policy_document" "ecs_task_assume_role" {
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["ecs-tasks.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "ecs_task_execution_role" {
-  name               = "miguel-ecs-task-execution-role"
-  assume_role_policy = data.aws_iam_policy_document.ecs_task_assume_role.json
-}
-
-resource "aws_iam_role_policy_attachment" "ecs_task_execution_policy" {
-  role = aws_iam_role.ecs_task_execution_role.name
-
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
 

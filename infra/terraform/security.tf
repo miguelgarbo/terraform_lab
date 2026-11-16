@@ -1,27 +1,4 @@
-# ---------- SSH ----------
-resource "aws_security_group" "ssh" {
-  name        = "libera-ssh"
-  description = "Libera SSH apenas para meu IP"
-  vpc_id      = aws_vpc.vpc_miguel_aluguel.id
 
-  tags = { Name = "libera-ssh" }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "ssh" {
-  security_group_id = aws_security_group.ssh.id
-  description       = "SSH do meu IP"
-  from_port         = 22
-  to_port           = 22
-  ip_protocol       = "tcp"
-  cidr_ipv4         = "0.0.0.0/0" 
-}
-
-resource "aws_vpc_security_group_egress_rule" "ssh_all" {
-  security_group_id = aws_security_group.ssh.id
-  description       = "Permite trafego de saida"
-  ip_protocol       = "-1"
-  cidr_ipv4         = "0.0.0.0/0"
-}
 
 # ---------- Grupos (sem regras inline) ----------
 resource "aws_security_group" "app_access" {
@@ -87,6 +64,26 @@ resource "aws_vpc_security_group_egress_rule" "app_to_back" {
   to_port                      = 8080
   ip_protocol                  = "tcp"
   referenced_security_group_id = aws_security_group.back-pi.id
+}
+
+# Saída para SSM (HTTPS) e atualizações do sistema
+resource "aws_vpc_security_group_egress_rule" "app_https_out" {
+  security_group_id = aws_security_group.app_access.id
+  description       = "HTTPS para SSM e atualizacoes"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# Repositórios apt do Ubuntu usam HTTP
+resource "aws_vpc_security_group_egress_rule" "app_http_out" {
+  security_group_id = aws_security_group.app_access.id
+  description       = "HTTP para repositorios apt (Ubuntu)"
+  from_port         = 80
+  to_port           = 80
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "0.0.0.0/0"
 }
 
 # ---------- Frontend ----------
