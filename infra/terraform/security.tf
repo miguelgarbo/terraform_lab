@@ -13,7 +13,7 @@ resource "aws_vpc_security_group_ingress_rule" "ssh" {
   from_port         = 22
   to_port           = 22
   ip_protocol       = "tcp"
-  cidr_ipv4         = "0.0.0.0/0" # troque pelo seu IP: "x.x.x.x/32"
+  cidr_ipv4         = "0.0.0.0/0" 
 }
 
 resource "aws_vpc_security_group_egress_rule" "ssh_all" {
@@ -127,7 +127,7 @@ resource "aws_vpc_security_group_egress_rule" "back_https" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-# Backend -> RDS (faltava no seu código!)
+# Backend -> RDS 
 resource "aws_vpc_security_group_egress_rule" "back_to_rds" {
   security_group_id            = aws_security_group.back-pi.id
   description                  = "PostgreSQL para o RDS"
