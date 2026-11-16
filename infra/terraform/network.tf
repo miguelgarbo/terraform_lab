@@ -46,16 +46,6 @@ resource "aws_subnet" "subnet-priv-2" {
   }
 }
 
-# Subnet Group do RDS
-resource "aws_db_subnet_group" "db_subnet_group" {
-  name       = "db-subnet-group"
-  subnet_ids = [aws_subnet.subnet-priv-1.id, aws_subnet.subnet-priv-2.id]
-
-  tags = {
-    Name = "DB Subnet Group"
-  }
-}
-
 # Internet Gateway
 # criar o igw para liberar acesso a internet para a subnet pública 
 resource "aws_internet_gateway" "igw" {

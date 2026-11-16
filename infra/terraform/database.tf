@@ -12,6 +12,17 @@ resource "aws_db_instance" "postgres_rds" {
   vpc_security_group_ids = [aws_security_group.rds-pi.id]
   skip_final_snapshot    = true
   publicly_accessible    = false
-  
+
   multi_az = true
+}
+
+# Subnet Group do RDS
+# aqui informa as subnets/zonas que o rds pode usar 
+resource "aws_db_subnet_group" "db_subnet_group" {
+  name       = "db-subnet-group"
+  subnet_ids = [aws_subnet.subnet-priv-1.id, aws_subnet.subnet-priv-2.id]
+
+  tags = {
+    Name = "DB Subnet Group"
+  }
 }
