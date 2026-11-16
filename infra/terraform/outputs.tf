@@ -21,5 +21,5 @@ output "private_ip_nginx" {
 output "url_app" {
   description = "URL pública para acessar a aplicação Miguel Aluguel"
 
-  value = "http://${aws_instance.ec2-nginx-pi.public_ip}"
+  value = "http://${aws_instance.ec2-nginx-pi.public_ip}/welcome"
 }
